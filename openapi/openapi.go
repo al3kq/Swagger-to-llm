@@ -1,0 +1,493 @@
+package openapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"strings"
+
+	"gopkg.in/yaml.v2"
+)
+
+// =====================================================
+// Simplified API Spec Structures (Enhanced)
+// =====================================================
+
+// APIDocument is the root of our simplified API spec.
+type APIDocument struct {
+	Title       string      `json:"title" yaml:"title"`
+	Version     string      `json:"version" yaml:"version"`
+	Description string      `json:"description,omitempty" yaml:"description,omitempty"`
+	Endpoints   []Endpoint  `json:"endpoints" yaml:"endpoints"`
+	Servers     []string    `json:"servers" yaml:"servers"`
+	Components  *Components `json:"components" yaml:"components"`
+}
+
+// Endpoint represents a simplified API endpoint.
+type Endpoint struct {
+	Path        string               `json:"path" yaml:"path"`
+	Method      string               `json:"method" yaml:"method"`
+	Summary     string               `json:"summary" yaml:"summary"`
+	Description string               `json:"description,omitempty" yaml:"description,omitempty"`
+	Parameters  []*Parameter         `json:"parameters" yaml:"parameters"`
+	RequestBody *RequestBody         `json:"requestBody" yaml:"requestBody"`
+	Responses   map[string]*Response `json:"responses" yaml:"responses"`
+}
+
+// Parameter represents a simplified parameter.
+type Parameter struct {
+	Name        string  `json:"name" yaml:"name"`
+	In          string  `json:"in" yaml:"in"`
+	Required    bool    `json:"required" yaml:"required"`
+	// New field: capture the type directly if present.
+	Type        string  `json:"type,omitempty" yaml:"type,omitempty"`
+	Schema      *Schema `json:"schema" yaml:"schema"`
+	Description string  `json:"description,omitempty" yaml:"description,omitempty"`
+	Ref         string  `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+}
+
+// RequestBody represents a simplified request body.
+type RequestBody struct {
+	Description string                `json:"description" yaml:"description"`
+	Content     map[string]*MediaType `json:"content" yaml:"content"`
+	Ref         string                `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+}
+
+// Response represents a simplified response.
+type Response struct {
+	Description string                `json:"description" yaml:"description"`
+	Content     map[string]*MediaType `json:"content" yaml:"content"`
+	Ref         string                `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+}
+
+// MediaType holds the media type object (only schema is used here).
+type MediaType struct {
+	Schema *Schema `json:"schema" yaml:"schema"`
+}
+
+// Schema represents a simplified schema.
+type Schema struct {
+	Type string `json:"type" yaml:"type"`
+	Ref  string `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+}
+
+// Components holds reusable objects.
+type Components struct {
+	Schemas       map[string]*Schema      `json:"schemas" yaml:"schemas"`
+	Parameters    map[string]*Parameter   `json:"parameters" yaml:"parameters"`
+	RequestBodies map[string]*RequestBody `json:"requestBodies" yaml:"requestBodies"`
+	Responses     map[string]*Response    `json:"responses" yaml:"responses"`
+}
+
+// =====================================================
+// Swagger 2.0 Structures
+// =====================================================
+
+// SwaggerSpec represents a Swagger 2.0 specification.
+type SwaggerSpec struct {
+	Swagger  string              `yaml:"swagger" json:"swagger"`
+	Info     SwaggerInfo         `yaml:"info" json:"info"`
+	BasePath string              `yaml:"basePath" json:"basePath"`
+	Paths    map[string]PathItem `yaml:"paths" json:"paths"`
+	// Additional fields (host, schemes, definitions, etc.) can be added as needed.
+}
+
+// SwaggerInfo holds API info for Swagger.
+type SwaggerInfo struct {
+	Title       string `yaml:"title" json:"title"`
+	Description string `yaml:"description" json:"description"`
+	Version     string `yaml:"version" json:"version"`
+}
+
+// PathItem represents the available operations for a single path.
+type PathItem struct {
+	Get     *Operation `yaml:"get" json:"get"`
+	Put     *Operation `yaml:"put" json:"put"`
+	Post    *Operation `yaml:"post" json:"post"`
+	Delete  *Operation `yaml:"delete" json:"delete"`
+	Options *Operation `yaml:"options" json:"options"`
+	Head    *Operation `yaml:"head" json:"head"`
+	Patch   *Operation `yaml:"patch" json:"patch"`
+}
+
+// Operation represents a Swagger operation.
+type Operation struct {
+	Summary     string              `yaml:"summary" json:"summary"`
+	Description string              `yaml:"description" json:"description"`
+	OperationID string              `yaml:"operationId" json:"operationId"`
+	Parameters  []Parameter         `yaml:"parameters" json:"parameters"`
+	Responses   map[string]Response `yaml:"responses" json:"responses"`
+}
+
+// =====================================================
+// Parsing and Conversion Functions
+// =====================================================
+
+// LoadAPISpec reads a YAML or JSON file and unmarshals it into an APIDocument.
+// It supports both the simplified API spec format and Swagger 2.0.
+func LoadAPISpec(path string) (*APIDocument, error) {
+	log.Printf("[LoadAPISpec] Attempting to read file: %s", path)
+
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Printf("[LoadAPISpec] Error reading file %s: %v", path, err)
+		return nil, err
+	}
+
+	log.Printf("[LoadAPISpec] File read successfully. Byte size: %d", len(data))
+	log.Printf("[LoadAPISpec] First 100 chars of file: %s", snippet(data, 100))
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		log.Printf("[LoadAPISpec] File is empty or whitespace only.")
+		return &APIDocument{}, nil
+	}
+
+	// Unmarshal into a generic map to check for a "swagger" key.
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		log.Printf("[LoadAPISpec] Error unmarshaling into raw map: %v", err)
+		return nil, err
+	}
+
+	if _, isSwagger := raw["swagger"]; isSwagger {
+		log.Printf("[LoadAPISpec] Detected Swagger format")
+		// Unmarshal into SwaggerSpec.
+		var swaggerSpec SwaggerSpec
+		if trimmed[0] == '{' {
+			log.Printf("[LoadAPISpec] Detected JSON - Unmarshaling into SwaggerSpec")
+			err = json.Unmarshal(data, &swaggerSpec)
+		} else {
+			log.Printf("[LoadAPISpec] Detected YAML - Unmarshaling into SwaggerSpec")
+			err = yaml.Unmarshal(data, &swaggerSpec)
+		}
+		if err != nil {
+			log.Printf("[LoadAPISpec] Error unmarshaling SwaggerSpec: %v", err)
+			return nil, err
+		}
+		log.Printf("[LoadAPISpec] Successfully unmarshaled SwaggerSpec. Title=%q, Version=%q, #Paths=%d",
+			swaggerSpec.Info.Title, swaggerSpec.Info.Version, len(swaggerSpec.Paths))
+		// Convert SwaggerSpec to APIDocument.
+		doc := convertSwaggerToAPIDocument(swaggerSpec)
+		return &doc, nil
+	}
+
+	// Otherwise, assume it's already in the simplified APIDocument format.
+	var doc APIDocument
+	if trimmed[0] == '{' {
+		log.Printf("[LoadAPISpec] Detected JSON - Unmarshaling into APIDocument")
+		err = json.Unmarshal(data, &doc)
+	} else {
+		log.Printf("[LoadAPISpec] Detected YAML - Unmarshaling into APIDocument")
+		err = yaml.Unmarshal(data, &doc)
+	}
+	if err != nil {
+		log.Printf("[LoadAPISpec] Unmarshal error: %v", err)
+		return nil, err
+	}
+
+	log.Printf("[LoadAPISpec] Successfully unmarshaled APIDocument. Title=%q, Version=%q, #Endpoints=%d",
+		doc.Title, doc.Version, len(doc.Endpoints))
+
+	return &doc, nil
+}
+
+// convertSwaggerToAPIDocument converts a SwaggerSpec into our simplified APIDocument.
+func convertSwaggerToAPIDocument(sw SwaggerSpec) APIDocument {
+	doc := APIDocument{
+		Title:       sw.Info.Title,
+		Version:     sw.Info.Version,
+		Description: sw.Info.Description,
+		Endpoints:   []Endpoint{},
+		Servers:     []string{}, // Swagger 2.0 doesn't have a "servers" array.
+	}
+
+	for path, item := range sw.Paths {
+		// For each HTTP method in the PathItem, create an Endpoint.
+		if item.Get != nil {
+			ep := createEndpointFromOperation(path, "GET", *item.Get)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Post != nil {
+			ep := createEndpointFromOperation(path, "POST", *item.Post)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Put != nil {
+			ep := createEndpointFromOperation(path, "PUT", *item.Put)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Delete != nil {
+			ep := createEndpointFromOperation(path, "DELETE", *item.Delete)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Patch != nil {
+			ep := createEndpointFromOperation(path, "PATCH", *item.Patch)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Head != nil {
+			ep := createEndpointFromOperation(path, "HEAD", *item.Head)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+		if item.Options != nil {
+			ep := createEndpointFromOperation(path, "OPTIONS", *item.Options)
+			doc.Endpoints = append(doc.Endpoints, ep)
+		}
+	}
+
+	return doc
+}
+
+// createEndpointFromOperation creates an Endpoint from a given Operation.
+func createEndpointFromOperation(path, method string, op Operation) Endpoint {
+	return Endpoint{
+		Path:        path,
+		Method:      method,
+		Summary:     op.Summary,
+		Description: op.Description,
+		Parameters:  convertParameters(op.Parameters),
+		Responses:   convertResponses(op.Responses),
+		// Swagger 2.0 does not have a separate RequestBody field (it uses parameters for body data).
+	}
+}
+
+// convertParameters converts a slice of Parameter (from Swagger) to a slice of pointers to Parameter.
+func convertParameters(params []Parameter) []*Parameter {
+	var result []*Parameter
+	for _, p := range params {
+		paramCopy := p // create a copy so each pointer is unique
+		result = append(result, &paramCopy)
+	}
+	return result
+}
+
+// convertResponses converts a map of Response (from Swagger) to a map of pointers to Response.
+func convertResponses(responses map[string]Response) map[string]*Response {
+	result := make(map[string]*Response)
+	for code, r := range responses {
+		respCopy := r
+		result[code] = &respCopy
+	}
+	return result
+}
+
+func minifyText(text string) string {
+	// Collapse all whitespace (including newlines) into a single space.
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// =====================================================
+// Documentation Rendering (Enhanced)
+// =====================================================
+
+// RenderText produces LLM-readable documentation for the API.
+func RenderText(doc *APIDocument) string {
+	var sb strings.Builder
+
+	// API Header
+	sb.WriteString(fmt.Sprintf("API: %s (v%s)\n\n", doc.Title, doc.Version))
+	sb.WriteString("DESCRIPTION:\n")
+	if doc.Description != "" {
+		sb.WriteString(doc.Description)
+	} else {
+		sb.WriteString("(None or your description here)")
+	}
+	sb.WriteString("\n\n")
+
+	// Process each Endpoint.
+	for _, ep := range doc.Endpoints {
+		sb.WriteString(fmt.Sprintf("ENDPOINT: %s %s\n", strings.ToUpper(ep.Method), ep.Path))
+		sb.WriteString(fmt.Sprintf("SUMMARY: %s\n", ep.Summary))
+		// Truncate endpoint description if too long.
+		desc := minifyText(ep.Description)
+		if len(desc) > 20000 {
+			desc = desc[:2000] + "..."
+		}
+		if desc == "" {
+			sb.WriteString("DESCRIPTION: (None)\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("DESCRIPTION: %s\n", desc))
+		}
+
+		// Parameters
+		sb.WriteString("PARAMETERS:\n")
+		if len(ep.Parameters) == 0 {
+			sb.WriteString("  (None)\n")
+		} else {
+			for _, p := range ep.Parameters {
+				// Use p.Type if present; otherwise, if a schema is provided, use that type.
+				var pType string
+				if p.Type != "" {
+					pType = p.Type
+				} else if p.Schema != nil {
+					pType = p.Schema.Type
+				} else {
+					pType = "(unknown)"
+				}
+				sb.WriteString(fmt.Sprintf("  - %s (%s, %s, required=%t)", p.Name, pType, p.In, p.Required))
+				if p.Description != "" {
+					sb.WriteString(fmt.Sprintf(" : %s", p.Description))
+				}
+				sb.WriteString("\n")
+			}
+		}
+
+		// Request Body
+		sb.WriteString("REQUEST BODY: ")
+		if ep.RequestBody != nil && ep.RequestBody.Description != "" {
+			sb.WriteString(ep.RequestBody.Description)
+		} else {
+			sb.WriteString("None")
+		}
+		sb.WriteString("\n")
+
+		// Responses
+		sb.WriteString("RESPONSES:\n")
+		if len(ep.Responses) == 0 {
+			sb.WriteString("  (None)\n")
+		} else {
+			for code, resp := range ep.Responses {
+				sb.WriteString(fmt.Sprintf("  - %s: %s\n", code, resp.Description))
+			}
+		}
+		sb.WriteString("END\n")
+	}
+	return sb.String()
+}
+
+// =====================================================
+// Existing Functions for Reference Resolution
+// =====================================================
+
+// ResolveReferences replaces $ref fields in the document with direct pointers to Components.
+func ResolveReferences(doc *APIDocument) error {
+	log.Printf("[ResolveReferences] doc.Title=%q, doc.Version=%q", doc.Title, doc.Version)
+	if doc.Components == nil {
+		log.Printf("[ResolveReferences] doc.Components is nil - no references to resolve.")
+		return nil
+	}
+
+	log.Printf("[ResolveReferences] #Endpoints = %d", len(doc.Endpoints))
+	for i := range doc.Endpoints {
+		ep := &doc.Endpoints[i]
+		log.Printf("[ResolveReferences] Endpoint %d => Path=%q, Method=%q, Summary=%q",
+			i, ep.Path, ep.Method, ep.Summary)
+
+		// Resolve parameters.
+		for j, param := range ep.Parameters {
+			if param == nil {
+				log.Printf("[ResolveReferences] Endpoint %d param %d is nil??", i, j)
+				continue
+			}
+			log.Printf("[ResolveReferences] Checking Endpoint %d param %d => Name=%q, Ref=%q",
+				i, j, param.Name, param.Ref)
+			if param.Ref != "" {
+				refName := extractNameFromRef(param.Ref, "parameters")
+				log.Printf("[ResolveReferences] param.Ref => looking for %q in doc.Components.Parameters", refName)
+				if resolved, ok := doc.Components.Parameters[refName]; ok {
+					ep.Parameters[j] = resolved
+					log.Printf("[ResolveReferences] param.Ref replaced with doc.Components.Parameters[%q]", refName)
+				} else {
+					errMsg := fmt.Sprintf("unresolved parameter reference: %s", param.Ref)
+					log.Printf("[ResolveReferences] %s", errMsg)
+					return fmt.Errorf(errMsg)
+				}
+			}
+			if err := resolveSchema(&param.Schema, doc); err != nil {
+				return err
+			}
+		}
+
+		// Resolve requestBody.
+		if ep.RequestBody != nil {
+			log.Printf("[ResolveReferences] Checking Endpoint %d requestBody => Ref=%q, Description=%q", i, ep.RequestBody.Ref, ep.RequestBody.Description)
+			if ep.RequestBody.Ref != "" {
+				refName := extractNameFromRef(ep.RequestBody.Ref, "requestBodies")
+				log.Printf("[ResolveReferences] requestBody.Ref => looking for %q in doc.Components.RequestBodies", refName)
+				if resolved, ok := doc.Components.RequestBodies[refName]; ok {
+					ep.RequestBody = resolved
+					log.Printf("[ResolveReferences] requestBody.Ref replaced with doc.Components.RequestBodies[%q]", refName)
+				} else {
+					errMsg := fmt.Sprintf("unresolved requestBody reference: %s", ep.RequestBody.Ref)
+					log.Printf("[ResolveReferences] %s", errMsg)
+					return fmt.Errorf(errMsg)
+				}
+			}
+			for contentType, mt := range ep.RequestBody.Content {
+				if mt != nil && mt.Schema != nil {
+					log.Printf("[ResolveReferences] requestBody content => %q, schema.Ref=%q", contentType, mt.Schema.Ref)
+					if err := resolveSchema(&mt.Schema, doc); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		// Resolve responses.
+		for code, resp := range ep.Responses {
+			if resp == nil {
+				log.Printf("[ResolveReferences] Endpoint %d => Response %q is nil??", i, code)
+				continue
+			}
+			log.Printf("[ResolveReferences] Endpoint %d => Response %q => Ref=%q, Description=%q",
+				i, code, resp.Ref, resp.Description)
+			if resp.Ref != "" {
+				refName := extractNameFromRef(resp.Ref, "responses")
+				log.Printf("[ResolveReferences] response.Ref => looking for %q in doc.Components.Responses", refName)
+				if resolved, ok := doc.Components.Responses[refName]; ok {
+					ep.Responses[code] = resolved
+					log.Printf("[ResolveReferences] response.Ref replaced with doc.Components.Responses[%q]", refName)
+				} else {
+					errMsg := fmt.Sprintf("unresolved response reference: %s", resp.Ref)
+					log.Printf("[ResolveReferences] %s", errMsg)
+					return fmt.Errorf(errMsg)
+				}
+			}
+			for contentType, mt := range resp.Content {
+				if mt != nil && mt.Schema != nil {
+					log.Printf("[ResolveReferences] response content => %q, schema.Ref=%q", contentType, mt.Schema.Ref)
+					if err := resolveSchema(&mt.Schema, doc); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resolveSchema replaces a Schema reference with a pointer to the component schema.
+func resolveSchema(s **Schema, doc *APIDocument) error {
+	if *s == nil {
+		return nil
+	}
+	if (*s).Ref != "" {
+		refName := extractNameFromRef((*s).Ref, "schemas")
+		log.Printf("[resolveSchema] Found schema.Ref=%q => looking for %q in doc.Components.Schemas", (*s).Ref, refName)
+		if resolved, ok := doc.Components.Schemas[refName]; ok {
+			*s = resolved
+			log.Printf("[resolveSchema] Replaced schema.Ref with doc.Components.Schemas[%q]", refName)
+		} else {
+			errMsg := fmt.Sprintf("unresolved schema reference: %s", (*s).Ref)
+			log.Printf("[resolveSchema] %s", errMsg)
+			return fmt.Errorf(errMsg)
+		}
+	}
+	return nil
+}
+
+// extractNameFromRef extracts the component name from a $ref string.
+// E.g. "#/components/schemas/Pet" with componentType "schemas" returns "Pet".
+func extractNameFromRef(ref, componentType string) string {
+	prefix := "#/components/" + componentType + "/"
+	return strings.TrimPrefix(ref, prefix)
+}
+
+// snippet is a helper function to safely print the first n bytes of a file.
+func snippet(data []byte, n int) string {
+	if len(data) <= n {
+		return string(data)
+	}
+	return string(data[:n]) + "..."
+}
