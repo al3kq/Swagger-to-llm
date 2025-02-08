@@ -1,3 +1,4 @@
 *.yaml
 *.json
 *.txt
+!requirements.txt
