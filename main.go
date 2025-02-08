@@ -30,9 +30,6 @@ func main() {
 
 	summary := openapi.RenderText(doc)
 
-	// Debug: print summary to console
-	log.Printf("Summary from RenderText:\n%s", summary)
-
 	// Write to file
 	outputFile := "llm1.txt"
 	log.Printf("Writing summary to %s...", outputFile)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"strings"
 
 	"gopkg.in/yaml.v2"
@@ -128,47 +127,33 @@ type Operation struct {
 // LoadAPISpec reads a YAML or JSON file and unmarshals it into an APIDocument.
 // It supports both the simplified API spec format and Swagger 2.0.
 func LoadAPISpec(path string) (*APIDocument, error) {
-	log.Printf("[LoadAPISpec] Attempting to read file: %s", path)
-
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		log.Printf("[LoadAPISpec] Error reading file %s: %v", path, err)
 		return nil, err
 	}
 
-	log.Printf("[LoadAPISpec] File read successfully. Byte size: %d", len(data))
-	log.Printf("[LoadAPISpec] First 100 chars of file: %s", snippet(data, 100))
-
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		log.Printf("[LoadAPISpec] File is empty or whitespace only.")
 		return &APIDocument{}, nil
 	}
 
 	// Unmarshal into a generic map to check for a "swagger" key.
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		log.Printf("[LoadAPISpec] Error unmarshaling into raw map: %v", err)
 		return nil, err
 	}
 
 	if _, isSwagger := raw["swagger"]; isSwagger {
-		log.Printf("[LoadAPISpec] Detected Swagger format")
 		// Unmarshal into SwaggerSpec.
 		var swaggerSpec SwaggerSpec
 		if trimmed[0] == '{' {
-			log.Printf("[LoadAPISpec] Detected JSON - Unmarshaling into SwaggerSpec")
 			err = json.Unmarshal(data, &swaggerSpec)
 		} else {
-			log.Printf("[LoadAPISpec] Detected YAML - Unmarshaling into SwaggerSpec")
 			err = yaml.Unmarshal(data, &swaggerSpec)
 		}
 		if err != nil {
-			log.Printf("[LoadAPISpec] Error unmarshaling SwaggerSpec: %v", err)
 			return nil, err
 		}
-		log.Printf("[LoadAPISpec] Successfully unmarshaled SwaggerSpec. Title=%q, Version=%q, #Paths=%d",
-			swaggerSpec.Info.Title, swaggerSpec.Info.Version, len(swaggerSpec.Paths))
 		// Convert SwaggerSpec to APIDocument.
 		doc := convertSwaggerToAPIDocument(swaggerSpec)
 		return &doc, nil
@@ -177,20 +162,13 @@ func LoadAPISpec(path string) (*APIDocument, error) {
 	// Otherwise, assume it's already in the simplified APIDocument format.
 	var doc APIDocument
 	if trimmed[0] == '{' {
-		log.Printf("[LoadAPISpec] Detected JSON - Unmarshaling into APIDocument")
 		err = json.Unmarshal(data, &doc)
 	} else {
-		log.Printf("[LoadAPISpec] Detected YAML - Unmarshaling into APIDocument")
 		err = yaml.Unmarshal(data, &doc)
 	}
 	if err != nil {
-		log.Printf("[LoadAPISpec] Unmarshal error: %v", err)
 		return nil, err
 	}
-
-	log.Printf("[LoadAPISpec] Successfully unmarshaled APIDocument. Title=%q, Version=%q, #Endpoints=%d",
-		doc.Title, doc.Version, len(doc.Endpoints))
-
 	return &doc, nil
 }
 
@@ -362,35 +340,24 @@ func RenderText(doc *APIDocument) string {
 
 // ResolveReferences replaces $ref fields in the document with direct pointers to Components.
 func ResolveReferences(doc *APIDocument) error {
-	log.Printf("[ResolveReferences] doc.Title=%q, doc.Version=%q", doc.Title, doc.Version)
 	if doc.Components == nil {
-		log.Printf("[ResolveReferences] doc.Components is nil - no references to resolve.")
 		return nil
 	}
 
-	log.Printf("[ResolveReferences] #Endpoints = %d", len(doc.Endpoints))
 	for i := range doc.Endpoints {
 		ep := &doc.Endpoints[i]
-		log.Printf("[ResolveReferences] Endpoint %d => Path=%q, Method=%q, Summary=%q",
-			i, ep.Path, ep.Method, ep.Summary)
 
 		// Resolve parameters.
 		for j, param := range ep.Parameters {
 			if param == nil {
-				log.Printf("[ResolveReferences] Endpoint %d param %d is nil??", i, j)
 				continue
 			}
-			log.Printf("[ResolveReferences] Checking Endpoint %d param %d => Name=%q, Ref=%q",
-				i, j, param.Name, param.Ref)
 			if param.Ref != "" {
 				refName := extractNameFromRef(param.Ref, "parameters")
-				log.Printf("[ResolveReferences] param.Ref => looking for %q in doc.Components.Parameters", refName)
 				if resolved, ok := doc.Components.Parameters[refName]; ok {
 					ep.Parameters[j] = resolved
-					log.Printf("[ResolveReferences] param.Ref replaced with doc.Components.Parameters[%q]", refName)
 				} else {
 					errMsg := fmt.Sprintf("unresolved parameter reference: %s", param.Ref)
-					log.Printf("[ResolveReferences] %s", errMsg)
 					return fmt.Errorf(errMsg)
 				}
 			}
@@ -401,22 +368,17 @@ func ResolveReferences(doc *APIDocument) error {
 
 		// Resolve requestBody.
 		if ep.RequestBody != nil {
-			log.Printf("[ResolveReferences] Checking Endpoint %d requestBody => Ref=%q, Description=%q", i, ep.RequestBody.Ref, ep.RequestBody.Description)
 			if ep.RequestBody.Ref != "" {
 				refName := extractNameFromRef(ep.RequestBody.Ref, "requestBodies")
-				log.Printf("[ResolveReferences] requestBody.Ref => looking for %q in doc.Components.RequestBodies", refName)
 				if resolved, ok := doc.Components.RequestBodies[refName]; ok {
 					ep.RequestBody = resolved
-					log.Printf("[ResolveReferences] requestBody.Ref replaced with doc.Components.RequestBodies[%q]", refName)
 				} else {
 					errMsg := fmt.Sprintf("unresolved requestBody reference: %s", ep.RequestBody.Ref)
-					log.Printf("[ResolveReferences] %s", errMsg)
 					return fmt.Errorf(errMsg)
 				}
 			}
-			for contentType, mt := range ep.RequestBody.Content {
+			for _, mt := range ep.RequestBody.Content {
 				if mt != nil && mt.Schema != nil {
-					log.Printf("[ResolveReferences] requestBody content => %q, schema.Ref=%q", contentType, mt.Schema.Ref)
 					if err := resolveSchema(&mt.Schema, doc); err != nil {
 						return err
 					}
@@ -427,26 +389,19 @@ func ResolveReferences(doc *APIDocument) error {
 		// Resolve responses.
 		for code, resp := range ep.Responses {
 			if resp == nil {
-				log.Printf("[ResolveReferences] Endpoint %d => Response %q is nil??", i, code)
 				continue
 			}
-			log.Printf("[ResolveReferences] Endpoint %d => Response %q => Ref=%q, Description=%q",
-				i, code, resp.Ref, resp.Description)
 			if resp.Ref != "" {
 				refName := extractNameFromRef(resp.Ref, "responses")
-				log.Printf("[ResolveReferences] response.Ref => looking for %q in doc.Components.Responses", refName)
 				if resolved, ok := doc.Components.Responses[refName]; ok {
 					ep.Responses[code] = resolved
-					log.Printf("[ResolveReferences] response.Ref replaced with doc.Components.Responses[%q]", refName)
 				} else {
 					errMsg := fmt.Sprintf("unresolved response reference: %s", resp.Ref)
-					log.Printf("[ResolveReferences] %s", errMsg)
 					return fmt.Errorf(errMsg)
 				}
 			}
-			for contentType, mt := range resp.Content {
+			for _, mt := range resp.Content {
 				if mt != nil && mt.Schema != nil {
-					log.Printf("[ResolveReferences] response content => %q, schema.Ref=%q", contentType, mt.Schema.Ref)
 					if err := resolveSchema(&mt.Schema, doc); err != nil {
 						return err
 					}
@@ -464,13 +419,10 @@ func resolveSchema(s **Schema, doc *APIDocument) error {
 	}
 	if (*s).Ref != "" {
 		refName := extractNameFromRef((*s).Ref, "schemas")
-		log.Printf("[resolveSchema] Found schema.Ref=%q => looking for %q in doc.Components.Schemas", (*s).Ref, refName)
 		if resolved, ok := doc.Components.Schemas[refName]; ok {
 			*s = resolved
-			log.Printf("[resolveSchema] Replaced schema.Ref with doc.Components.Schemas[%q]", refName)
 		} else {
 			errMsg := fmt.Sprintf("unresolved schema reference: %s", (*s).Ref)
-			log.Printf("[resolveSchema] %s", errMsg)
 			return fmt.Errorf(errMsg)
 		}
 	}
